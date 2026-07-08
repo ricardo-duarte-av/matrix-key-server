@@ -18,21 +18,39 @@ This project uses Go modules and requires Go 1.20 or higher.
 
 ```bash
 # Build
-git clone https://github.com/t2bot/matrix-key-server.git
+git clone https://github.com/ricardo-duarte-av/matrix-key-server.git
 cd matrix-key-server
 go build -v -o bin/matrix-key-server
 
 # Run
-./bin/matrix-key-server -address="0.0.0.0" -port=8080 -domain="keys.t2host.io" -postgres="postgres://username:password@localhost/dbname?sslmode=disable"
+./bin/matrix-key-server -address="0.0.0.0" -port=8080 -domain="keys.t2host.io" -postgres="postgres://username:password@localhost/dbname?sslmode=disable" -notaries="matrix.org,tchncs.de,unredacted.org"
 ```
+
+#### Trusted notaries
+
+When an origin server is unreachable, the key server can fall back to a configured set of trusted
+notaries to retrieve that server's keys. This allows it to serve keys for long-dead servers that were
+cached by a notary while they were still alive (useful for verifying historical events).
+
+Set the trusted notaries with the `-notaries` flag (or the `NOTARIES` environment variable) as a
+comma-separated list of server names. It defaults to `matrix.org,tchncs.de,unredacted.org`. The first
+notary whose response passes signature verification is used; only servers you actually trust should be
+listed here, as the notary vouches for keys the origin can no longer confirm. To disable the fallback
+entirely, pass an empty list (`-notaries=""`).
 
 #### Docker
 
+The upstream `t2bot/matrix-key-server` image is no longer used - build your own from this repository:
+
 ```bash
-docker run -it --rm -e "ADDRESS=0.0.0.0" -e "PORT=8080" -e "DOMAIN=keys.t2host.io" -e "POSTGRES=postgres://username:password@localhost/dbname?sslmode=disable" t2bot/matrix-key-server
+docker build -t matrix-key-server .
 ```
 
-Build your own by checking out the repository and running `docker build -t t2bot/matrix-key-server .`
+Then run it:
+
+```bash
+docker run -it --rm -e "ADDRESS=0.0.0.0" -e "PORT=8080" -e "DOMAIN=keys.t2host.io" -e "POSTGRES=postgres://username:password@localhost/dbname?sslmode=disable" -e "NOTARIES=matrix.org,tchncs.de,unredacted.org" matrix-key-server
+```
 
 ## Custom APIs
 
