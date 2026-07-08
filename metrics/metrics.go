@@ -43,6 +43,7 @@ const (
 	OutcomeNotarySuccess  = "notary_success"
 	OutcomeAllFailedStale = "all_failed_stale"
 	OutcomeAllFailedEmpty = "all_failed_empty"
+	OutcomeArchiveServed  = "archive_served"
 )
 
 // Result label values for outbound fetches.

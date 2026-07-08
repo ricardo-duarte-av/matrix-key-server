@@ -48,6 +48,22 @@ const remoteRefetchCooldownMs = int64(3600000) // 1 hour
 // from, regardless of its valid_until_ts.
 const remoteKeyLifespanMs = int64(604800000) // 7 days
 
+// remoteArchiveRecheckMs is the (long) backoff for archived servers - ones a
+// notary could only serve from a frozen, already-expired copy, meaning the
+// origin is gone and the data is static. We keep serving our stored snapshot and
+// re-attempt a refresh at most this often, purely as cheap insurance in case the
+// server revives.
+const remoteArchiveRecheckMs = int64(86400000) // 24 hours
+
+// isArchived reports whether a stored record is an archived snapshot of a gone
+// server: it was obtained via a notary (the origin was unreachable) and the
+// notary itself could only vouch with an already-expired valid_until_ts. Such a
+// record is treated as an immutable historical artifact - see storeRemoteKeys,
+// which refuses to overwrite it with anything but a genuinely fresher snapshot.
+func isArchived(s *models.RemoteServer, now int64) bool {
+	return s != nil && s.ObtainedViaNotary != "" && int64(s.ValidUntilTs) < now
+}
+
 // serveDecision describes whether, and on what basis, a cached remote-server
 // record can satisfy a request without a live refetch.
 type serveDecision int
@@ -103,6 +119,14 @@ func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 			return packageCachedKeysFor(s)
 		case serveCooldown:
 			metrics.RecordKeyQuery(metrics.OutcomeCacheCooldown)
+			return packageCachedKeysFor(s)
+		}
+
+		// The record is an archived snapshot of a gone server. Its keys are
+		// static, so serve them straight from the store and only re-attempt a
+		// refresh on the long archive backoff - no per-request notary churn.
+		if isArchived(s, now) && now < int64(s.UpdatedTs)+remoteArchiveRecheckMs {
+			metrics.RecordKeyQuery(metrics.OutcomeArchiveServed)
 			return packageCachedKeysFor(s)
 		}
 	}
@@ -237,10 +261,28 @@ func packageCachedKeysFor(server *models.RemoteServer) (*models.CachedRemoteKeys
 }
 
 func storeRemoteKeys(keyInfo api_models.ServerKeyResult, additionalJson models.AdditionalJSON, obtainedViaNotary string) (*models.CachedRemoteKeys, error) {
+	now := util.NowMillis()
+	serverName := models.ServerName(keyInfo.ServerName)
+
+	// Freeze protection: never overwrite an archived (gone-server) snapshot with a
+	// non-upgrade. Its keys are an immutable historical artifact, and the write
+	// path below deletes-then-reinserts, so a thinner notary reply would silently
+	// drop keys we may be the last to hold. Only a genuinely fresher snapshot
+	// (later valid_until_ts, e.g. a revived server) is allowed to replace it. We
+	// still bump updated_ts so the archive re-check backoff is honoured.
+	if existing, err := db.GetRemoteServerMetadata(serverName); err == nil &&
+		isArchived(existing, now) && models.Timestamp(keyInfo.ValidUntilTs) <= existing.ValidUntilTs {
+		if tErr := db.TouchRemoteServer(serverName, models.Timestamp(now)); tErr != nil {
+			logrus.Warnf("Could not update refresh timestamp for archived server %s: %v", serverName, tErr)
+		}
+		logrus.Infof("Keeping frozen archived snapshot for %s (incoming valid_until_ts is not newer)", serverName)
+		return packageCachedKeysFor(existing)
+	}
+
 	res := &models.CachedRemoteKeys{
 		RemoteServer: &models.RemoteServer{
-			ServerName:        models.ServerName(keyInfo.ServerName),
-			UpdatedTs:         models.Timestamp(util.NowMillis()),
+			ServerName:        serverName,
+			UpdatedTs:         models.Timestamp(now),
 			ValidUntilTs:      models.Timestamp(keyInfo.ValidUntilTs),
 			NonStandardJSON:   additionalJson,
 			ObtainedViaNotary: obtainedViaNotary,

@@ -16,7 +16,11 @@
 
 package keys
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/t2bot/matrix-key-server/db/models"
+)
 
 func TestCanServeCachedKeys(t *testing.T) {
 	const now = int64(1_000_000_000_000)
@@ -79,6 +83,46 @@ func TestCanServeCachedKeys(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("canServeCachedKeys(updated=%d, valid=%d, min=%d, now=%d) = %d, want %d",
 					tc.updatedTs, tc.validUntilTs, tc.minValidTs, now, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsArchived(t *testing.T) {
+	const now = int64(1_000_000_000_000)
+	const day = int64(86_400_000)
+
+	tests := []struct {
+		name string
+		s    *models.RemoteServer
+		want bool
+	}{
+		{
+			name: "nil record is not archived",
+			s:    nil,
+			want: false,
+		},
+		{
+			name: "notary-served with expired validity is archived",
+			s:    &models.RemoteServer{ObtainedViaNotary: "matrix.org", ValidUntilTs: models.Timestamp(now - day)},
+			want: true,
+		},
+		{
+			name: "notary-served but still valid is not archived",
+			s:    &models.RemoteServer{ObtainedViaNotary: "matrix.org", ValidUntilTs: models.Timestamp(now + day)},
+			want: false,
+		},
+		{
+			name: "directly-fetched with expired validity is not archived",
+			s:    &models.RemoteServer{ObtainedViaNotary: "", ValidUntilTs: models.Timestamp(now - day)},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isArchived(tc.s, now); got != tc.want {
+				t.Errorf("isArchived(%+v, %d) = %v, want %v", tc.s, now, got, tc.want)
 			}
 		})
 	}
