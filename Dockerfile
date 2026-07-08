@@ -11,5 +11,5 @@ RUN apk add --no-cache \
         su-exec \
         ca-certificates
 COPY --from=builder /opt/bin/matrix-key-server /usr/local/bin/
-ENTRYPOINT "/usr/local/bin/matrix-key-server"
+ENTRYPOINT ["/usr/local/bin/matrix-key-server"]
 EXPOSE 8080
