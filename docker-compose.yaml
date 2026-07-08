@@ -1,0 +1,39 @@
+services:
+  matrix-key-server:
+    image: ghcr.io/ricardo-duarte-av/matrix-key-server:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # host:container - expose the key server on the host (put a TLS-terminating
+      # reverse proxy in front for production).
+      - "8080:8080"
+    environment:
+      # These map to the binary's command-line flags (namsral/flag).
+      ADDRESS: "0.0.0.0"
+      PORT: "8080"
+      # The domain this key server signs for - change to your own.
+      DOMAIN: "keys.example.com"
+      POSTGRES: "postgres://keys:keys@postgres/keys?sslmode=disable"
+      # Trusted notaries consulted when an origin server is unreachable.
+      # Set to "" to disable the fallback entirely.
+      NOTARIES: "matrix.org,tchncs.de,unredacted.org"
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "keys"
+      POSTGRES_PASSWORD: "keys"
+      POSTGRES_DB: "keys"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keys -d keys"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:

@@ -2,11 +2,9 @@
 
 Implementation of a key server for Matrix.
 
-Support room: [#matrix-key-server:t2bot.io](https://matrix.to/#/#matrix-key-server:t2bot.io)
+This is a fork of the original [t2bot/matrix-key-server](https://github.com/t2bot/matrix-key-server), adding a trusted-notary fallback for unreachable servers along with other changes.
 
 **Caution**: Although this has notary server functionality, it is not yet recommended to point Synapse at this. It has not been tested - use at your own risk.
-
-Demo: [https://federationtester.matrix.org#keys.t2host.io](https://federationtester.matrix.org#keys.t2host.io)
 
 ## Building and running
 
@@ -23,7 +21,7 @@ cd matrix-key-server
 go build -v -o bin/matrix-key-server
 
 # Run
-./bin/matrix-key-server -address="0.0.0.0" -port=8080 -domain="keys.t2host.io" -postgres="postgres://username:password@localhost/dbname?sslmode=disable" -notaries="matrix.org,tchncs.de,unredacted.org"
+./bin/matrix-key-server -address="0.0.0.0" -port=8080 -domain="keys.example.com" -postgres="postgres://username:password@localhost/dbname?sslmode=disable" -notaries="matrix.org,tchncs.de,unredacted.org"
 ```
 
 #### Trusted notaries
@@ -40,17 +38,41 @@ entirely, pass an empty list (`-notaries=""`).
 
 #### Docker
 
-The upstream `t2bot/matrix-key-server` image is no longer used - build your own from this repository:
+A pre-built multi-arch image is published to the GitHub Container Registry on
+every push to `master`:
+
+```bash
+docker pull ghcr.io/ricardo-duarte-av/matrix-key-server:latest
+```
+
+Alternatively, build your own from this repository:
 
 ```bash
 docker build -t matrix-key-server .
 ```
 
-Then run it:
+Then run it (all flags are also configurable as environment variables):
 
 ```bash
-docker run -it --rm -e "ADDRESS=0.0.0.0" -e "PORT=8080" -e "DOMAIN=keys.t2host.io" -e "POSTGRES=postgres://username:password@localhost/dbname?sslmode=disable" -e "NOTARIES=matrix.org,tchncs.de,unredacted.org" matrix-key-server
+docker run -it --rm -e "ADDRESS=0.0.0.0" -e "PORT=8080" -e "DOMAIN=keys.example.com" -e "POSTGRES=postgres://username:password@localhost/dbname?sslmode=disable" -e "NOTARIES=matrix.org,tchncs.de,unredacted.org" ghcr.io/ricardo-duarte-av/matrix-key-server:latest
 ```
+
+#### Docker Compose
+
+A [`docker-compose.yaml`](docker-compose.yaml) is included that runs the key
+server together with its own PostgreSQL database:
+
+```bash
+# Edit docker-compose.yaml first: set DOMAIN to your key server's domain and
+# change the PostgreSQL credentials.
+docker compose up -d
+```
+
+The compose file exposes the key server on host port `8080`. Terminate TLS with a
+reverse proxy in front of it for production use. Database contents are persisted
+in the `postgres-data` volume; the key server generates and stores its signing
+key in PostgreSQL on first start, so keep that volume to preserve your server's
+identity.
 
 ## Custom APIs
 
