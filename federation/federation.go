@@ -39,6 +39,20 @@ import (
 var apiUrlCacheInstance *cache.Cache
 var apiUrlSingletonLock = &sync.Once{}
 
+const (
+	// federationRequestTimeout bounds a single outbound federated key fetch.
+	// Homeservers retry, so a shorter timeout lets us fall back to a notary (and
+	// answer the caller) faster when an origin is slow or unreachable.
+	federationRequestTimeout = 8 * time.Second
+	// wellKnownTimeout bounds the .well-known discovery lookup. It previously used
+	// http.Get with no timeout, so a blackholed host could hang discovery for ~30s
+	// and dominate request latency.
+	wellKnownTimeout = 5 * time.Second
+)
+
+// wellKnownClient is a shared, timeout-bounded client for .well-known discovery.
+var wellKnownClient = &http.Client{Timeout: wellKnownTimeout}
+
 type cachedServer struct {
 	url      string
 	hostname string
@@ -101,7 +115,7 @@ func GetServerApiUrl(hostname string) (string, string, error) {
 	// Step 3: if the hostname is not an IP address and no explicit port is given, do .well-known
 	// Note that we have sprawling branches here because we need to fall through to step 4 if parsing fails
 	logrus.Debug("Doing .well-known lookup on " + h)
-	r, err := http.Get(fmt.Sprintf("https://%s/.well-known/matrix/server", h))
+	r, err := wellKnownClient.Get(fmt.Sprintf("https://%s/.well-known/matrix/server", h))
 	if err == nil && r.StatusCode == http.StatusOK {
 		// Try parsing .well-known
 		c, err2 := io.ReadAll(r.Body)
@@ -260,7 +274,7 @@ func federatedClientFor(realHost string) *http.Client {
 			IdleConnTimeout:     90 * time.Second,
 			ForceAttemptHTTP2:   true,
 		},
-		Timeout: 15 * time.Second,
+		Timeout: federationRequestTimeout,
 	}
 	federatedClients[realHost] = c
 	return c

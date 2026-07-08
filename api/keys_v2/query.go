@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -33,6 +34,10 @@ import (
 	"github.com/t2bot/matrix-key-server/util"
 	"golang.org/x/crypto/ed25519"
 )
+
+// batchResolveConcurrency bounds how many domains in a single batch request are
+// resolved in parallel, capping the outbound fan-out (and DB connection use).
+const batchResolveConcurrency = 8
 
 type BatchedServerKeys struct {
 	Keys []map[string]interface{} `json:"server_keys"`
@@ -85,8 +90,13 @@ func QueryKeysBatch(r *http.Request, log *logrus.Entry) interface{} {
 		return common.BadRequest("Body not JSON")
 	}
 
-	finalResp := &BatchedServerKeys{Keys: make([]map[string]interface{}, 0)}
-
+	// Flatten the request into one lookup per domain, collapsing each domain's
+	// key criteria to the highest minimum_valid_until_ts it asked for.
+	type lookupItem struct {
+		domain     string
+		minValidTs int64
+	}
+	items := make([]lookupItem, 0, len(lookup.Keys))
 	for domain, keySearches := range lookup.Keys {
 		maxMinValidTs := int64(0)
 		for _, q := range keySearches {
@@ -94,17 +104,41 @@ func QueryKeysBatch(r *http.Request, log *logrus.Entry) interface{} {
 				maxMinValidTs = q.MinValidTs
 			}
 		}
-
 		if maxMinValidTs <= 0 {
 			maxMinValidTs = util.NowMillis()
 		}
+		items = append(items, lookupItem{domain: domain, minValidTs: maxMinValidTs})
+	}
 
-		expanded, errLike := findAndPrepareKeys(domain, maxMinValidTs, log)
-		if errLike != nil {
-			return errLike
+	// Resolve the domains concurrently. Each resolution can block on a slow or
+	// unreachable origin (and then a notary), so doing them sequentially made a
+	// batch's latency the sum of every server's; in parallel it is roughly the
+	// slowest one. A semaphore bounds the outbound fan-out.
+	type lookupResult struct {
+		expanded map[string]interface{}
+		errLike  interface{}
+	}
+	results := make([]lookupResult, len(items))
+	sem := make(chan struct{}, batchResolveConcurrency)
+	var wg sync.WaitGroup
+	for i, item := range items {
+		wg.Add(1)
+		go func(i int, item lookupItem) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			expanded, errLike := findAndPrepareKeys(item.domain, item.minValidTs, log)
+			results[i] = lookupResult{expanded: expanded, errLike: errLike}
+		}(i, item)
+	}
+	wg.Wait()
+
+	finalResp := &BatchedServerKeys{Keys: make([]map[string]interface{}, 0, len(items))}
+	for _, res := range results {
+		if res.errLike != nil {
+			return res.errLike
 		}
-
-		finalResp.Keys = append(finalResp.Keys, expanded)
+		finalResp.Keys = append(finalResp.Keys, res.expanded)
 	}
 
 	return finalResp
