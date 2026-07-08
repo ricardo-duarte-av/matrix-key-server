@@ -60,7 +60,7 @@ func VerifySignatures(obj interface{}, publicKeys map[string]map[string]ed25519.
 		for keyId, b64 := range keySigs {
 			var publicKey ed25519.PublicKey
 			if publicKey, ok = domainKeys[keyId]; !ok {
-				return errors.New(fmt.Sprintf("missing public key for %s %s", domain, keyId))
+				return fmt.Errorf("missing public key for %s %s", domain, keyId)
 			}
 
 			signature, err := DecodeUnpaddedBase64String(b64.(string))
@@ -70,7 +70,7 @@ func VerifySignatures(obj interface{}, publicKeys map[string]map[string]ed25519.
 
 			valid := ed25519.Verify(publicKey, canonical, signature)
 			if !valid {
-				return errors.New(fmt.Sprintf("signature verification failed for %s %s", domain, keyId))
+				return fmt.Errorf("signature verification failed for %s %s", domain, keyId)
 			}
 		}
 	}

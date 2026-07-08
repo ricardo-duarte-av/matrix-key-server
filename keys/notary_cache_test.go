@@ -27,49 +27,49 @@ func TestCanServeCachedKeys(t *testing.T) {
 		updatedTs    int64
 		validUntilTs int64
 		minValidTs   int64
-		want         bool
+		want         serveDecision
 	}{
 		{
-			name:         "fresh keys with future validity are served",
-			updatedTs:    now - day,      // fetched yesterday
-			validUntilTs: now + 10*day,   // valid well into the future
+			name:         "fresh keys with future validity are served fresh",
+			updatedTs:    now - day,    // fetched yesterday
+			validUntilTs: now + 10*day, // valid well into the future
 			minValidTs:   now,
-			want:         true,
+			want:         serveFresh,
 		},
 		{
 			name:         "halfway-dead cache is refetched once cooldown elapsed",
 			updatedTs:    now - 2*3600_000, // last tried 2h ago (> 1h cooldown)
 			validUntilTs: now - day,        // already expired
 			minValidTs:   now,
-			want:         false,
+			want:         serveNone,
 		},
 		{
 			name:         "expired keys are still served during the cooldown",
 			updatedTs:    now - 60_000, // tried 1 minute ago
 			validUntilTs: now - day,    // expired: the dead-server case
 			minValidTs:   now,
-			want:         true,
+			want:         serveCooldown,
 		},
 		{
 			name:         "caller minimum higher than cache is served during cooldown",
 			updatedTs:    now - 60_000,
 			validUntilTs: now + day, // not expired, but below the caller's minimum
 			minValidTs:   now + 5*day,
-			want:         true,
+			want:         serveCooldown,
 		},
 		{
 			name:         "caller minimum higher than cache is refetched after cooldown",
 			updatedTs:    now - 2*3600_000,
 			validUntilTs: now + day,
 			minValidTs:   now + 5*day,
-			want:         false,
+			want:         serveNone,
 		},
 		{
 			name:         "record beyond 7-day lifespan is refetched",
 			updatedTs:    now - 8*day, // older than remoteKeyLifespanMs
 			validUntilTs: now + 10*day,
 			minValidTs:   now,
-			want:         false,
+			want:         serveNone,
 		},
 	}
 
@@ -77,7 +77,7 @@ func TestCanServeCachedKeys(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := canServeCachedKeys(tc.updatedTs, tc.validUntilTs, tc.minValidTs, now)
 			if got != tc.want {
-				t.Errorf("canServeCachedKeys(updated=%d, valid=%d, min=%d, now=%d) = %v, want %v",
+				t.Errorf("canServeCachedKeys(updated=%d, valid=%d, min=%d, now=%d) = %d, want %d",
 					tc.updatedTs, tc.validUntilTs, tc.minValidTs, now, got, tc.want)
 			}
 		})

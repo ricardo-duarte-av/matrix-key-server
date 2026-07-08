@@ -18,13 +18,15 @@ package keys
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"io"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/t2bot/matrix-key-server/api/api_models"
 	"github.com/t2bot/matrix-key-server/db"
 	"github.com/t2bot/matrix-key-server/db/models"
 	"github.com/t2bot/matrix-key-server/federation"
+	"github.com/t2bot/matrix-key-server/metrics"
 	"github.com/t2bot/matrix-key-server/signing"
 	"github.com/t2bot/matrix-key-server/util"
 	"golang.org/x/crypto/ed25519"
@@ -46,23 +48,42 @@ const remoteRefetchCooldownMs = int64(3600000) // 1 hour
 // from, regardless of its valid_until_ts.
 const remoteKeyLifespanMs = int64(604800000) // 7 days
 
-// canServeCachedKeys reports whether a cached remote-server record can satisfy a
-// request without a live refetch. It is true when the cache is fresh enough per
-// the freshness gate, or when the cache is stale/expired but we attempted a
-// refresh within remoteRefetchCooldownMs - which stops a long-dead server from
-// triggering a full origin timeout plus notary round-trip on every request.
-func canServeCachedKeys(updatedTs, validUntilTs, minValidUntilTs, now int64) bool {
+// serveDecision describes whether, and on what basis, a cached remote-server
+// record can satisfy a request without a live refetch.
+type serveDecision int
+
+const (
+	// serveNone means the cache cannot be served and a live refetch is required.
+	serveNone serveDecision = iota
+	// serveFresh means the cache passed the freshness gate.
+	serveFresh
+	// serveCooldown means the cache is stale/expired but we attempted a refresh
+	// within the cooldown window, so we serve it rather than refetch.
+	serveCooldown
+)
+
+// canServeCachedKeys decides whether a cached remote-server record can satisfy a
+// request without a live refetch. It returns serveFresh when the cache is fresh
+// enough per the freshness gate, serveCooldown when the cache is stale/expired
+// but we attempted a refresh within remoteRefetchCooldownMs (which stops a
+// long-dead server from triggering a full origin timeout plus notary round-trip
+// on every request), or serveNone when a refetch is required.
+func canServeCachedKeys(updatedTs, validUntilTs, minValidUntilTs, now int64) serveDecision {
 	isBeyondLifespan := now > updatedTs+remoteKeyLifespanMs
 	isHalfwayDead := (updatedTs+validUntilTs)/2 < now
 	isMinimallyAccepted := validUntilTs >= minValidUntilTs
 
 	if isMinimallyAccepted && !isHalfwayDead && !isBeyondLifespan {
-		return true
+		return serveFresh
 	}
 
 	// Stale or expired, but we tried to refresh recently: serve what we last
 	// stored rather than hammering a likely-dead origin and the notaries again.
-	return now < updatedTs+remoteRefetchCooldownMs
+	if now < updatedTs+remoteRefetchCooldownMs {
+		return serveCooldown
+	}
+
+	return serveNone
 }
 
 // queryRemoteKeys resolves a server's keys, optionally falling back to trusted
@@ -75,16 +96,27 @@ func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 		return nil, err
 	}
 	now := util.NowMillis()
-	if s != nil && canServeCachedKeys(int64(s.UpdatedTs), int64(s.ValidUntilTs), int64(minValidUntilTs), now) {
-		return packageCachedKeysFor(s)
+	if s != nil {
+		switch canServeCachedKeys(int64(s.UpdatedTs), int64(s.ValidUntilTs), int64(minValidUntilTs), now) {
+		case serveFresh:
+			metrics.RecordKeyQuery(metrics.OutcomeCacheFresh)
+			return packageCachedKeysFor(s)
+		case serveCooldown:
+			metrics.RecordKeyQuery(metrics.OutcomeCacheCooldown)
+			return packageCachedKeysFor(s)
+		}
 	}
 
 	// Cache miss, stale, and past the refetch cooldown: try the origin directly.
 	// TODO: Rate limit: https://github.com/turt2live/matrix-key-server/issues/2
+	originStart := time.Now()
 	result, err := fetchDirectFromOrigin(serverName)
 	if err == nil {
+		metrics.ObserveOriginFetch(metrics.ResultSuccess, time.Since(originStart))
+		metrics.RecordKeyQuery(metrics.OutcomeOriginSuccess)
 		return result, nil
 	}
+	metrics.ObserveOriginFetch(metrics.ResultFailure, time.Since(originStart))
 	logrus.Warnf("Could not fetch keys for %s directly from the origin: %v", serverName, err)
 
 	// The origin is unreachable or gave us an unusable response. Before giving up
@@ -95,6 +127,7 @@ func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 		if nErr != nil {
 			logrus.Warnf("Notary fallback for %s failed: %v", serverName, nErr)
 		} else if cached != nil {
+			metrics.RecordKeyQuery(metrics.OutcomeNotarySuccess)
 			return cached, nil
 		}
 	}
@@ -106,6 +139,7 @@ func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 		if err := db.TouchRemoteServer(serverName, models.Timestamp(now)); err != nil {
 			logrus.Warnf("Could not update refresh timestamp for %s: %v", serverName, err)
 		}
+		metrics.RecordKeyQuery(metrics.OutcomeAllFailedStale)
 		return packageCachedKeysFor(s)
 	}
 
@@ -115,6 +149,7 @@ func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 	if err := db.UpsertRemoteServer(serverName, models.Timestamp(now), models.Timestamp(now), models.AdditionalJSON{}, ""); err != nil {
 		logrus.Warnf("Could not persist negative cache entry for %s: %v", serverName, err)
 	}
+	metrics.RecordKeyQuery(metrics.OutcomeAllFailedEmpty)
 	return &models.CachedRemoteKeys{
 		Keys:       make([]*models.RemoteKey, 0),
 		Signatures: make([]*models.RemoteSignature, 0),
@@ -142,7 +177,7 @@ func fetchDirectFromOrigin(serverName models.ServerName) (*models.CachedRemoteKe
 	}
 	defer keysResponse.Body.Close()
 
-	c, err := ioutil.ReadAll(keysResponse.Body)
+	c, err := io.ReadAll(keysResponse.Body)
 	if err != nil {
 		return nil, err
 	}

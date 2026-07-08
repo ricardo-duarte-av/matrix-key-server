@@ -20,9 +20,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/t2bot/matrix-key-server/api/common"
+	"github.com/t2bot/matrix-key-server/metrics"
 )
 
 type handler struct {
@@ -31,6 +33,7 @@ type handler struct {
 }
 
 func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	contextLog := logrus.WithFields(logrus.Fields{
 		"method":   r.Method,
 		"host":     r.Host,
@@ -49,12 +52,8 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	contextLog.Info(fmt.Sprintf("Replying with result: %T %+v", res, res))
 
 	statusCode := http.StatusOK
-	switch result := res.(type) {
-	case *common.ErrorResponse:
-		statusCode = result.HttpStatus
-		break
-	default:
-		break
+	if errResp, ok := res.(*common.ErrorResponse); ok {
+		statusCode = errResp.HttpStatus
 	}
 
 	// Order is important: Set headers before sending responses
@@ -62,5 +61,9 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(statusCode)
 
 	encoder := json.NewEncoder(w)
-	encoder.Encode(res)
+	if err := encoder.Encode(res); err != nil {
+		contextLog.Warnf("Failed to encode response: %v", err)
+	}
+
+	metrics.ObserveHTTPRequest(h.action, r.Method, statusCode, time.Since(start))
 }

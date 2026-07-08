@@ -28,8 +28,6 @@ type Database struct {
 	db *sql.DB
 }
 
-var dbInstance *Database
-
 func Setup(dbUrl string) error {
 	dbInstance := &Database{}
 	var err error

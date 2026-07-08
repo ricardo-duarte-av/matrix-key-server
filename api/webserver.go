@@ -26,6 +26,7 @@ import (
 	"github.com/t2bot/matrix-key-server/api/federation_v1"
 	"github.com/t2bot/matrix-key-server/api/health"
 	"github.com/t2bot/matrix-key-server/api/keys_v2"
+	"github.com/t2bot/matrix-key-server/metrics"
 )
 
 type route struct {
@@ -66,6 +67,9 @@ func Run(listenHost string, listenPort int) {
 
 	address := fmt.Sprintf("%s:%d", listenHost, listenPort)
 	httpMux := http.NewServeMux()
+	// Serve /metrics directly off the outer mux so scrapes bypass the JSON
+	// handler wrapper (no per-request logging, no JSON envelope).
+	httpMux.Handle("/metrics", metrics.Handler())
 	httpMux.Handle("/", rtr)
 
 	logrus.WithField("address", address).Info("Started up. Listening at http://" + address)

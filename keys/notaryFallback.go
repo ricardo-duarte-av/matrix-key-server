@@ -19,14 +19,16 @@ package keys
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/t2bot/matrix-key-server/api/api_models"
 	"github.com/t2bot/matrix-key-server/db/models"
 	"github.com/t2bot/matrix-key-server/federation"
+	"github.com/t2bot/matrix-key-server/metrics"
 	"github.com/t2bot/matrix-key-server/signing"
 	"github.com/t2bot/matrix-key-server/util"
 	"golang.org/x/crypto/ed25519"
@@ -49,15 +51,19 @@ func queryViaTrustedNotaries(serverName models.ServerName, minValidUntilTs model
 			continue
 		}
 
+		notaryStart := time.Now()
 		cached, err := queryOneNotary(notary, serverName, minValidUntilTs)
 		if err != nil {
+			metrics.ObserveNotaryFetch(notary, metrics.ResultFailure, time.Since(notaryStart))
 			logrus.Warnf("Trusted notary %s could not provide keys for %s: %v", notary, target, err)
 			lastErr = err
 			continue
 		}
 		if cached == nil {
+			metrics.ObserveNotaryFetch(notary, metrics.ResultFailure, time.Since(notaryStart))
 			continue
 		}
+		metrics.ObserveNotaryFetch(notary, metrics.ResultSuccess, time.Since(notaryStart))
 
 		logrus.Warnf("Obtained keys for %s via trusted notary %s (origin unreachable)", target, notary)
 		return cached, nil
@@ -102,7 +108,7 @@ func queryOneNotary(notary string, serverName models.ServerName, minValidUntilTs
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("notary %s returned status %d", notary, resp.StatusCode)
 	}
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}

@@ -9,7 +9,13 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Gate the image build on formatting, vet, tests and linting. A failure here
+  # stops the build/merge jobs below from publishing anything.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: ci
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read

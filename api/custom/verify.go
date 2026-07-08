@@ -18,7 +18,7 @@ package custom
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 
@@ -35,11 +35,9 @@ func VerifyAuthHeader(r *http.Request, log *logrus.Entry) interface{} {
 	uri := r.Header.Get("X-Keys-URI")
 	destination := r.Header.Get("X-Keys-Destination")
 
-	if strings.HasSuffix(uri, "?") {
-		uri = uri[0 : len(uri)-1]
-	}
+	uri = strings.TrimSuffix(uri, "?")
 
-	b, err := ioutil.ReadAll(r.Body)
+	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Error(err)
 		return common.InternalServerError("Failed to read body")

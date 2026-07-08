@@ -18,7 +18,7 @@ package keys_v2
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -73,7 +73,7 @@ func QueryKeysSingle(r *http.Request, log *logrus.Entry) interface{} {
 
 func QueryKeysBatch(r *http.Request, log *logrus.Entry) interface{} {
 	lookup := &BatchKeyLookup{}
-	b, err := ioutil.ReadAll(r.Body)
+	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Error(err)
 		return common.InternalServerError("Failed to read body")
