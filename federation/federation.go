@@ -225,6 +225,47 @@ func GetServerApiUrl(hostname string) (string, string, error) {
 	return url, h, nil
 }
 
+var (
+	federatedClientsLock sync.Mutex
+	federatedClients     = map[string]*http.Client{}
+)
+
+// federatedClientFor returns a shared, connection-pooling HTTP client for the
+// given TLS host. Clients are cached per host because each needs its own
+// tls.Config.ServerName, but must be reused across requests: building a fresh
+// http.Transport per call (as this code used to) defeats connection pooling, so
+// every federation fetch paid a full DNS + TCP + TLS handshake, and the discarded
+// transports leaked their keep-alive connections' readLoop/writeLoop goroutines
+// indefinitely (no IdleConnTimeout). Reuse fixes both the CPU churn and the leak.
+func federatedClientFor(realHost string) *http.Client {
+	federatedClientsLock.Lock()
+	defer federatedClientsLock.Unlock()
+
+	if c, ok := federatedClients[realHost]; ok {
+		return c
+	}
+
+	c := &http.Client{
+		Transport: &http.Transport{
+			// This is how we verify the certificate is valid for the host we
+			// expect. Previously using `req.URL.Host` we'd end up changing which
+			// server we were connecting to (ie: matrix.org instead of
+			// matrix.org.cdn.cloudflare.net), which obviously doesn't help us. We
+			// needed to do that though because the HTTP client doesn't verify
+			// against the req.Host certificate, but it does handle it off the
+			// req.URL.Host. So, we need to tell it which certificate to verify.
+			TLSClientConfig:     &tls.Config{ServerName: realHost},
+			MaxIdleConns:        10,
+			MaxIdleConnsPerHost: 2,
+			IdleConnTimeout:     90 * time.Second,
+			ForceAttemptHTTP2:   true,
+		},
+		Timeout: 15 * time.Second,
+	}
+	federatedClients[realHost] = c
+	return c
+}
+
 func FederatedGet(url string, realHost string) (*http.Response, error) {
 	logrus.Info("Doing federated GET to " + url + " with host " + realHost)
 
@@ -238,23 +279,7 @@ func FederatedGet(url string, realHost string) (*http.Response, error) {
 	req.Header.Set("User-Agent", "matrix-media-repo")
 	req.Host = realHost
 
-	// This is how we verify the certificate is valid for the host we expect.
-	// Previously using `req.URL.Host` we'd end up changing which server we were
-	// connecting to (ie: matrix.org instead of matrix.org.cdn.cloudflare.net),
-	// which obviously doesn't help us. We needed to do that though because the
-	// HTTP client doesn't verify against the req.Host certificate, but it does
-	// handle it off the req.URL.Host. So, we need to tell it which certificate
-	// to verify.
-	client := http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				ServerName: realHost,
-			},
-		},
-		Timeout: 15 * time.Second,
-	}
-
-	resp, err := client.Do(req)
+	resp, err := federatedClientFor(realHost).Do(req)
 	if err != nil {
 		return nil, err
 	}

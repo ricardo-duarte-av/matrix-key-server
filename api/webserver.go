@@ -19,6 +19,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"net/http/pprof"
 
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -70,6 +71,16 @@ func Run(listenHost string, listenPort int) {
 	// Serve /metrics directly off the outer mux so scrapes bypass the JSON
 	// handler wrapper (no per-request logging, no JSON envelope).
 	httpMux.Handle("/metrics", metrics.Handler())
+
+	// Expose net/http/pprof on the same listener for live profiling (CPU,
+	// goroutines, heap). Like /metrics, this is meant for the internal network -
+	// keep it off the public reverse proxy.
+	httpMux.HandleFunc("/debug/pprof/", pprof.Index)
+	httpMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	httpMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	httpMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	httpMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
 	httpMux.Handle("/", rtr)
 
 	logrus.WithField("address", address).Info("Started up. Listening at http://" + address)
