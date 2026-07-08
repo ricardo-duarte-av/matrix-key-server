@@ -97,7 +97,7 @@ func GetRemoteServerMetadata(serverName models.ServerName) (*models.RemoteServer
 	var server = &models.RemoteServer{ServerName: serverName}
 	var jsonOut string
 
-	err := r.Scan(&server.UpdatedTs, &server.ValidUntilTs, &jsonOut)
+	err := r.Scan(&server.UpdatedTs, &server.ValidUntilTs, &jsonOut, &server.ObtainedViaNotary)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -115,12 +115,17 @@ func GetRemoteServerMetadata(serverName models.ServerName) (*models.RemoteServer
 	return server, nil
 }
 
-func UpsertRemoteServer(serverName models.ServerName, updatedTs models.Timestamp, validUntilTs models.Timestamp, additionalJson models.AdditionalJSON) error {
+func UpsertRemoteServer(serverName models.ServerName, updatedTs models.Timestamp, validUntilTs models.Timestamp, additionalJson models.AdditionalJSON, obtainedViaNotary string) error {
 	j, err := json.Marshal(additionalJson)
 	if err != nil {
 		return err
 	}
-	_, err = statements[upsertRemoteServer].Exec(serverName, updatedTs, validUntilTs, string(j))
+	// Store direct fetches as NULL rather than an empty string.
+	var notary sql.NullString
+	if obtainedViaNotary != "" {
+		notary = sql.NullString{String: obtainedViaNotary, Valid: true}
+	}
+	_, err = statements[upsertRemoteServer].Exec(serverName, updatedTs, validUntilTs, string(j), notary)
 	if err != nil {
 		return err
 	}

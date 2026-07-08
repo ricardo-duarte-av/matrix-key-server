@@ -126,6 +126,10 @@ func findAndPrepareKeys(serverName string, minValidTs int64, log *logrus.Entry) 
 		return nil, common.InternalServerError("Unexpected server_name")
 	}
 
+	if remoteKeys.ObtainedViaNotary != "" {
+		log.Infof("Serving keys for %s obtained via notary %s, not directly from the origin", serverName, remoteKeys.ObtainedViaNotary)
+	}
+
 	publicKeys := map[string]map[string]ed25519.PublicKey{
 		keys.SelfDomainName:           make(map[string]ed25519.PublicKey),
 		string(remoteKeys.ServerName): make(map[string]ed25519.PublicKey),

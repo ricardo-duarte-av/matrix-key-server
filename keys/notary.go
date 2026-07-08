@@ -31,6 +31,14 @@ import (
 )
 
 func QueryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timestamp) (*models.CachedRemoteKeys, error) {
+	return queryRemoteKeys(serverName, minValidUntilTs, true)
+}
+
+// queryRemoteKeys resolves a server's keys, optionally falling back to trusted
+// notaries when the origin is unreachable. allowNotaryFallback must be false
+// when resolving a notary's own keys, since trusting a notary's signature
+// requires fetching that notary's keys directly (never through another notary).
+func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timestamp, allowNotaryFallback bool) (*models.CachedRemoteKeys, error) {
 	s, err := db.GetRemoteServerMetadata(serverName)
 	if err != nil {
 		return nil, err
@@ -48,27 +56,50 @@ func QueryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 		}
 	}
 
-	// Cache miss: fetch new keys
+	// Cache miss (or stale): try to fetch fresh keys directly from the origin.
 	// TODO: Rate limit: https://github.com/turt2live/matrix-key-server/issues/2
+	result, err := fetchDirectFromOrigin(serverName)
+	if err == nil {
+		return result, nil
+	}
+	logrus.Warnf("Could not fetch keys for %s directly from the origin: %v", serverName, err)
+
+	// The origin is unreachable or gave us an unusable response. Before giving up
+	// (or serving a stale copy), ask the configured trusted notaries whether they
+	// still hold these keys. Skipped when resolving a notary's own keys.
+	if allowNotaryFallback {
+		cached, nErr := queryViaTrustedNotaries(serverName, minValidUntilTs)
+		if nErr != nil {
+			logrus.Warnf("Notary fallback for %s failed: %v", serverName, nErr)
+		} else if cached != nil {
+			return cached, nil
+		}
+	}
+
+	if s != nil {
+		// Continue to serve the last known response from the dead server.
+		return packageCachedKeysFor(s)
+	}
+
+	// The server is dead and we have no keys anywhere: return nothing back.
+	return &models.CachedRemoteKeys{
+		Keys:       make([]*models.RemoteKey, 0),
+		Signatures: make([]*models.RemoteSignature, 0),
+		RemoteServer: &models.RemoteServer{
+			ServerName:   serverName,
+			ValidUntilTs: models.Timestamp(util.NowMillis()),
+			UpdatedTs:    models.Timestamp(util.NowMillis()),
+		},
+	}, nil
+}
+
+// fetchDirectFromOrigin resolves and fetches a server's keys straight from the
+// origin, verifies the self-signature, and caches them. It returns an error if
+// the server cannot be reached or the response fails verification.
+func fetchDirectFromOrigin(serverName models.ServerName) (*models.CachedRemoteKeys, error) {
 	url, hostname, err := federation.GetServerApiUrl(string(serverName))
 	if err != nil {
-		logrus.Error(err)
-
-		if s != nil {
-			// Continue to serve the last known response from the dead server
-			return packageCachedKeysFor(s)
-		} else {
-			// else if the server is dead and we have no keys then return nothing back
-			return &models.CachedRemoteKeys{
-				Keys:       make([]*models.RemoteKey, 0),
-				Signatures: make([]*models.RemoteSignature, 0),
-				RemoteServer: &models.RemoteServer{
-					ServerName:   serverName,
-					ValidUntilTs: models.Timestamp(util.NowMillis()),
-					UpdatedTs:    models.Timestamp(util.NowMillis()),
-				},
-			}, nil
-		}
+		return nil, err
 	}
 
 	keysUrl := url + "/_matrix/key/v2/server"
@@ -76,6 +107,7 @@ func QueryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 	if err != nil {
 		return nil, err
 	}
+	defer keysResponse.Body.Close()
 
 	c, err := ioutil.ReadAll(keysResponse.Body)
 	if err != nil {
@@ -115,7 +147,7 @@ func QueryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 		return nil, err
 	}
 
-	return storeRemoteKeys(keyInfo, additionalFields)
+	return storeRemoteKeys(keyInfo, additionalFields, "")
 }
 
 func packageCachedKeysFor(server *models.RemoteServer) (*models.CachedRemoteKeys, error) {
@@ -136,19 +168,20 @@ func packageCachedKeysFor(server *models.RemoteServer) (*models.CachedRemoteKeys
 	}, nil
 }
 
-func storeRemoteKeys(keyInfo api_models.ServerKeyResult, additionalJson models.AdditionalJSON) (*models.CachedRemoteKeys, error) {
+func storeRemoteKeys(keyInfo api_models.ServerKeyResult, additionalJson models.AdditionalJSON, obtainedViaNotary string) (*models.CachedRemoteKeys, error) {
 	res := &models.CachedRemoteKeys{
 		RemoteServer: &models.RemoteServer{
-			ServerName:      models.ServerName(keyInfo.ServerName),
-			UpdatedTs:       models.Timestamp(util.NowMillis()),
-			ValidUntilTs:    models.Timestamp(keyInfo.ValidUntilTs),
-			NonStandardJSON: additionalJson,
+			ServerName:        models.ServerName(keyInfo.ServerName),
+			UpdatedTs:         models.Timestamp(util.NowMillis()),
+			ValidUntilTs:      models.Timestamp(keyInfo.ValidUntilTs),
+			NonStandardJSON:   additionalJson,
+			ObtainedViaNotary: obtainedViaNotary,
 		},
 		Keys:       make([]*models.RemoteKey, 0),
 		Signatures: make([]*models.RemoteSignature, 0),
 	}
 
-	err := db.UpsertRemoteServer(res.ServerName, res.UpdatedTs, res.ValidUntilTs, additionalJson)
+	err := db.UpsertRemoteServer(res.ServerName, res.UpdatedTs, res.ValidUntilTs, additionalJson, obtainedViaNotary)
 	if err != nil {
 		return nil, err
 	}

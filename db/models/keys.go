@@ -34,6 +34,11 @@ type RemoteServer struct {
 	UpdatedTs       Timestamp
 	ValidUntilTs    Timestamp
 	NonStandardJSON AdditionalJSON
+
+	// ObtainedViaNotary is empty when these keys were fetched directly from the
+	// origin server, or the server_name of the trusted notary they were fetched
+	// through when the origin was unreachable.
+	ObtainedViaNotary string
 }
 
 type RemoteKey struct {

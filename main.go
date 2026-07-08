@@ -36,6 +36,7 @@ func main() {
 	pgUrl := flag.String("postgres", "postgres://username:password@localhost/dbname?sslmode=disable", "PostgreSQL database URI")
 	listenHost := flag.String("address", "0.0.0.0", "Address to listen for requests on")
 	listenPort := flag.Int("port", 8080, "Port to listen for requests on")
+	notaries := flag.String("notaries", "matrix.org,tchncs.de,unredacted.org", "Comma-separated list of trusted notary servers to consult when an origin server is unreachable")
 	flag.Parse()
 
 	logrus.Info("Preparing database...")
@@ -57,6 +58,9 @@ func main() {
 	keys.SelfDomainName = *domainName
 	logrus.Infof("This server's domain is %s", keys.SelfDomainName)
 
+	keys.TrustedNotaries = parseNotaries(*notaries, keys.SelfDomainName)
+	logrus.Infof("Trusted notaries: %v", keys.TrustedNotaries)
+
 	logrus.Info("Preparing own signing key...")
 	err = prepareOwnKey()
 	if err != nil {
@@ -65,6 +69,22 @@ func main() {
 
 	logrus.Info("Starting app...")
 	api.Run(*listenHost, *listenPort)
+}
+
+// parseNotaries splits a comma-separated notary list, trimming whitespace and
+// dropping empties, duplicates, and this server's own domain.
+func parseNotaries(raw string, self string) []string {
+	seen := make(map[string]bool)
+	notaries := make([]string, 0)
+	for _, n := range strings.Split(raw, ",") {
+		n = strings.TrimSpace(n)
+		if n == "" || n == self || seen[n] {
+			continue
+		}
+		seen[n] = true
+		notaries = append(notaries, n)
+	}
+	return notaries
 }
 
 func prepareOwnKey() error {
