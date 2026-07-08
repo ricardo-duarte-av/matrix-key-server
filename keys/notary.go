@@ -34,6 +34,37 @@ func QueryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 	return queryRemoteKeys(serverName, minValidUntilTs, true)
 }
 
+// remoteRefetchCooldownMs bounds how often we re-attempt a live fetch (origin
+// then trusted notaries) for a server whose cached keys are stale or expired.
+// Without it, a long-dead server whose keys have lapsed fails the freshness gate
+// on every request and triggers a full origin timeout plus a notary round-trip
+// each time. Within the cooldown we serve the last thing we stored - expired or
+// not - instead of pinging the notaries again.
+const remoteRefetchCooldownMs = int64(3600000) // 1 hour
+
+// remoteKeyLifespanMs is the maximum age of a cached record we will ever serve
+// from, regardless of its valid_until_ts.
+const remoteKeyLifespanMs = int64(604800000) // 7 days
+
+// canServeCachedKeys reports whether a cached remote-server record can satisfy a
+// request without a live refetch. It is true when the cache is fresh enough per
+// the freshness gate, or when the cache is stale/expired but we attempted a
+// refresh within remoteRefetchCooldownMs - which stops a long-dead server from
+// triggering a full origin timeout plus notary round-trip on every request.
+func canServeCachedKeys(updatedTs, validUntilTs, minValidUntilTs, now int64) bool {
+	isBeyondLifespan := now > updatedTs+remoteKeyLifespanMs
+	isHalfwayDead := (updatedTs+validUntilTs)/2 < now
+	isMinimallyAccepted := validUntilTs >= minValidUntilTs
+
+	if isMinimallyAccepted && !isHalfwayDead && !isBeyondLifespan {
+		return true
+	}
+
+	// Stale or expired, but we tried to refresh recently: serve what we last
+	// stored rather than hammering a likely-dead origin and the notaries again.
+	return now < updatedTs+remoteRefetchCooldownMs
+}
+
 // queryRemoteKeys resolves a server's keys, optionally falling back to trusted
 // notaries when the origin is unreachable. allowNotaryFallback must be false
 // when resolving a notary's own keys, since trusting a notary's signature
@@ -43,20 +74,12 @@ func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 	if err != nil {
 		return nil, err
 	}
-	if s != nil {
-		now := util.NowMillis()
-		sevenDaysFromUpdate := int64(s.UpdatedTs) + int64(604800000)
-
-		isBeyondLifespan := now > sevenDaysFromUpdate
-		isHalfwayDead := int64(s.UpdatedTs+s.ValidUntilTs)/2 < now
-		isMinimallyAccepted := s.ValidUntilTs >= minValidUntilTs
-
-		if isMinimallyAccepted && !isHalfwayDead && !isBeyondLifespan {
-			return packageCachedKeysFor(s)
-		}
+	now := util.NowMillis()
+	if s != nil && canServeCachedKeys(int64(s.UpdatedTs), int64(s.ValidUntilTs), int64(minValidUntilTs), now) {
+		return packageCachedKeysFor(s)
 	}
 
-	// Cache miss (or stale): try to fetch fresh keys directly from the origin.
+	// Cache miss, stale, and past the refetch cooldown: try the origin directly.
 	// TODO: Rate limit: https://github.com/turt2live/matrix-key-server/issues/2
 	result, err := fetchDirectFromOrigin(serverName)
 	if err == nil {
@@ -77,18 +100,28 @@ func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 	}
 
 	if s != nil {
-		// Continue to serve the last known response from the dead server.
+		// Neither the origin nor a notary could help. Serve the last known
+		// response and record the failed attempt so the cooldown suppresses
+		// repeated origin/notary round-trips until it elapses.
+		if err := db.TouchRemoteServer(serverName, models.Timestamp(now)); err != nil {
+			logrus.Warnf("Could not update refresh timestamp for %s: %v", serverName, err)
+		}
 		return packageCachedKeysFor(s)
 	}
 
-	// The server is dead and we have no keys anywhere: return nothing back.
+	// The server is dead and we have no keys anywhere. Persist a negative-cache
+	// entry so the cooldown applies here too and we stop re-querying the notaries
+	// for a server nobody can resolve.
+	if err := db.UpsertRemoteServer(serverName, models.Timestamp(now), models.Timestamp(now), models.AdditionalJSON{}, ""); err != nil {
+		logrus.Warnf("Could not persist negative cache entry for %s: %v", serverName, err)
+	}
 	return &models.CachedRemoteKeys{
 		Keys:       make([]*models.RemoteKey, 0),
 		Signatures: make([]*models.RemoteSignature, 0),
 		RemoteServer: &models.RemoteServer{
 			ServerName:   serverName,
-			ValidUntilTs: models.Timestamp(util.NowMillis()),
-			UpdatedTs:    models.Timestamp(util.NowMillis()),
+			ValidUntilTs: models.Timestamp(now),
+			UpdatedTs:    models.Timestamp(now),
 		},
 	}, nil
 }

@@ -32,6 +32,7 @@ const selectRemoteSignatures = "selectRemoteSignatures"
 const deleteRemoteKeys = "deleteRemoteKeys"
 const deleteRemoteSignatures = "deleteRemoteSignatures"
 const upsertRemoteServer = "upsertRemoteServer"
+const touchRemoteServer = "touchRemoteServer"
 const insertRemoteKey = "insertRemoteKey"
 const insertRemoteSignature = "insertRemoteSignature"
 
@@ -46,6 +47,7 @@ var queries = map[string]string{
 	deleteRemoteKeys:       "DELETE FROM remote_keys WHERE server_name = $1;",
 	deleteRemoteSignatures: "DELETE FROM remote_signatures WHERE server_name = $1;",
 	upsertRemoteServer:     "INSERT INTO remote_servers (server_name, updated_ts, valid_until_ts, nonstandard_json, obtained_via_notary) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (server_name) DO UPDATE SET updated_ts = $2, valid_until_ts = $3, nonstandard_json = $4, obtained_via_notary = $5;",
+	touchRemoteServer:      "UPDATE remote_servers SET updated_ts = $2 WHERE server_name = $1;",
 	insertRemoteKey:        "INSERT INTO remote_keys (server_name, key_id, public_key_b64, expires_ts) VALUES ($1, $2, $3, $4);",
 	insertRemoteSignature:  "INSERT INTO remote_signatures (server_name, key_id, signature_b64) VALUES ($1, $2, $3);",
 }

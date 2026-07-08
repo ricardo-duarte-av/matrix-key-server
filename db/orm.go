@@ -132,6 +132,14 @@ func UpsertRemoteServer(serverName models.ServerName, updatedTs models.Timestamp
 	return nil
 }
 
+// TouchRemoteServer bumps only the updated_ts of an existing remote server row,
+// recording that we just attempted a refresh without disturbing the cached keys
+// or their valid_until_ts. It is a no-op if the server is not yet cached.
+func TouchRemoteServer(serverName models.ServerName, updatedTs models.Timestamp) error {
+	_, err := statements[touchRemoteServer].Exec(serverName, updatedTs)
+	return err
+}
+
 func DeleteRemoteServerKeys(serverName models.ServerName) error {
 	_, err := statements[deleteRemoteKeys].Exec(serverName)
 	if err != nil {
