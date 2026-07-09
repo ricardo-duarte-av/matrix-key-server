@@ -194,6 +194,17 @@ func GetAllRemoteServerKeys(serverName models.ServerName) ([]*models.RemoteKey, 
 	return results, nil
 }
 
+// CountKnownServers returns how many cached remote servers we last reached
+// directly at their origin, how many we could only reach through a trusted
+// notary, and how many neither the origin nor any notary could resolve. The
+// three counts partition remote_servers, so they sum to the total number of
+// servers we know of.
+func CountKnownServers() (direct int64, viaNotary int64, unreachable int64, err error) {
+	r := statements[countKnownServers].QueryRow()
+	err = r.Scan(&direct, &viaNotary, &unreachable)
+	return direct, viaNotary, unreachable, err
+}
+
 func GetAllRemoteServerSignatures(serverName models.ServerName) ([]*models.RemoteSignature, error) {
 	r, err := statements[selectRemoteSignatures].Query(serverName)
 	if err == sql.ErrNoRows {

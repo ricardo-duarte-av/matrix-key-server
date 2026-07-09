@@ -19,6 +19,7 @@ package main
 import (
 	"os"
 	"strings"
+	"time"
 
 	"github.com/namsral/flag"
 	"github.com/sirupsen/logrus"
@@ -26,6 +27,7 @@ import (
 	"github.com/t2bot/matrix-key-server/db"
 	"github.com/t2bot/matrix-key-server/keys"
 	"github.com/t2bot/matrix-key-server/logging"
+	"github.com/t2bot/matrix-key-server/metrics"
 )
 
 func main() {
@@ -67,8 +69,36 @@ func main() {
 		logrus.Fatal(err)
 	}
 
+	startKnownServerGauges()
+
 	logrus.Info("Starting app...")
 	api.Run(*listenHost, *listenPort)
+}
+
+// knownServerRefreshInterval is how often the cached-server gauges are recomputed
+// from the database. These counts move only as fast as keys are fetched, so a
+// coarse interval keeps the aggregate query off the scrape path.
+const knownServerRefreshInterval = 60 * time.Second
+
+// startKnownServerGauges publishes the direct/notary server counts once, then
+// keeps them refreshed in the background so a scrape never has to wait on a
+// database aggregate.
+func startKnownServerGauges() {
+	refresh := func() {
+		direct, viaNotary, unreachable, err := db.CountKnownServers()
+		if err != nil {
+			logrus.Warnf("Could not refresh known-server gauges: %v", err)
+			return
+		}
+		metrics.SetKnownServers(direct, viaNotary, unreachable)
+	}
+
+	refresh()
+	go func() {
+		for range time.Tick(knownServerRefreshInterval) {
+			refresh()
+		}
+	}()
 }
 
 // parseNotaries splits a comma-separated notary list, trimming whitespace and
