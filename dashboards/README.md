@@ -27,8 +27,13 @@ The dashboard has a `job` variable; select the job name you used above.
 
 - This is a portable export. The live copy provisioned into a running Grafana
   instance is kept separately and is not committed here.
-- The panels currently cover HTTP request rates/latency and the Go runtime and
-  process metrics. The domain-specific families - `keyserver_key_query_total`
-  (resolution outcomes), `keyserver_origin_fetch_seconds`,
-  `keyserver_notary_fetch_seconds` (notary lag), and the `archive_served`
-  outcome - are exported by the server and can be added as panels.
+- The panels cover HTTP request rates/latency, the Go runtime and process
+  metrics, key resolution and notary behaviour (`keyserver_key_query_total`,
+  `keyserver_origin_fetch_seconds`, `keyserver_notary_fetch_seconds`), and the
+  known-server counts (`keyserver_known_servers`).
+- `keyserver_known_servers` is a gauge whose `reachability` label partitions
+  every server we hold a record for, so `sum()` over it is the total known:
+  `direct` (keys fetched from the origin), `notary` (origin unreachable, keys
+  came from a trusted notary), and `unreachable` (neither could resolve it -
+  a negative-cache entry). It is refreshed from the database once a minute
+  rather than on each scrape, so it will lag a change by up to that long.

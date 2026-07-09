@@ -35,6 +35,7 @@ const upsertRemoteServer = "upsertRemoteServer"
 const touchRemoteServer = "touchRemoteServer"
 const insertRemoteKey = "insertRemoteKey"
 const insertRemoteSignature = "insertRemoteSignature"
+const countKnownServers = "countKnownServers"
 
 var queries = map[string]string{
 	selectAllSelfKeys:      "SELECT key_id, public_key_b64, private_key_b64, expires_ts FROM self_keys;",
@@ -50,4 +51,18 @@ var queries = map[string]string{
 	touchRemoteServer:      "UPDATE remote_servers SET updated_ts = $2 WHERE server_name = $1;",
 	insertRemoteKey:        "INSERT INTO remote_keys (server_name, key_id, public_key_b64, expires_ts) VALUES ($1, $2, $3, $4);",
 	insertRemoteSignature:  "INSERT INTO remote_signatures (server_name, key_id, signature_b64) VALUES ($1, $2, $3);",
+
+	// Every remote_servers row falls in exactly one bucket, so the three counts
+	// sum to the total number of servers we know of. A row with no keys at all is
+	// a negative-cache entry - neither the origin nor any notary could resolve it
+	// - which is why "direct" is not simply obtained_via_notary IS NULL. Rows
+	// obtained via a notary always carry keys.
+	countKnownServers: `
+		SELECT
+			COUNT(*) FILTER (WHERE rs.obtained_via_notary IS NULL AND EXISTS (
+				SELECT 1 FROM remote_keys rk WHERE rk.server_name = rs.server_name)),
+			COUNT(*) FILTER (WHERE rs.obtained_via_notary IS NOT NULL),
+			COUNT(*) FILTER (WHERE rs.obtained_via_notary IS NULL AND NOT EXISTS (
+				SELECT 1 FROM remote_keys rk WHERE rk.server_name = rs.server_name))
+		FROM remote_servers rs;`,
 }

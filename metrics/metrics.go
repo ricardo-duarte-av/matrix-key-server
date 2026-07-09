@@ -52,6 +52,14 @@ const (
 	ResultFailure = "failure"
 )
 
+// Reachability label values for the known-servers gauge. They partition the
+// cached servers, so summing across the label gives the total we know of.
+const (
+	ReachabilityDirect      = "direct"
+	ReachabilityNotary      = "notary"
+	ReachabilityUnreachable = "unreachable"
+)
+
 // fetchBuckets extends the default histogram buckets with a couple of larger
 // ones, since outbound federated fetches can run up to the 15s client timeout.
 var fetchBuckets = append(append([]float64{}, prometheus.DefBuckets...), 15, 30)
@@ -84,6 +92,11 @@ var (
 		Help:    "Latency of key fetches from a trusted notary (\"notary lag\"), labelled by notary and result.",
 		Buckets: fetchBuckets,
 	}, []string{"notary", "result"})
+
+	knownServers = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "keyserver_known_servers",
+		Help: "Cached remote servers, labelled by how their keys were last obtained: direct from the origin, through a trusted notary, or unreachable (neither could resolve them). The labels partition the set, so summing gives the total number of servers known.",
+	}, []string{"reachability"})
 )
 
 // Handler returns the HTTP handler that serves the Prometheus exposition format,
@@ -114,4 +127,12 @@ func ObserveOriginFetch(result string, d time.Duration) {
 // trusted notary.
 func ObserveNotaryFetch(notary, result string, d time.Duration) {
 	notaryFetch.WithLabelValues(notary, result).Observe(d.Seconds())
+}
+
+// SetKnownServers publishes the current counts of directly-reachable,
+// notary-reachable, and unreachable cached servers.
+func SetKnownServers(direct, viaNotary, unreachable int64) {
+	knownServers.WithLabelValues(ReachabilityDirect).Set(float64(direct))
+	knownServers.WithLabelValues(ReachabilityNotary).Set(float64(viaNotary))
+	knownServers.WithLabelValues(ReachabilityUnreachable).Set(float64(unreachable))
 }
