@@ -17,3 +17,6 @@ bin/
 # Grafana's live-provisioned dashboard copy (instance-specific, root-owned).
 # The portable, committable dashboard lives in dashboards/ instead.
 /grafana/
+
+#Claude
+claude.session
