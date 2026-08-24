@@ -17,6 +17,7 @@
 package federation
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
@@ -253,4 +254,71 @@ func TestClassifyWellKnownHonoursCacheControl(t *testing.T) {
 	if ttl != 2*time.Hour {
 		t.Fatalf("ttl = %v, want 2h from Cache-Control", ttl)
 	}
+}
+
+// TestReadResponseBody checks the cap distinguishes a body that lands exactly on
+// the limit from one that runs past it, so an over-long response is rejected
+// rather than silently truncated into something that might still parse.
+func TestReadResponseBody(t *testing.T) {
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{"small body", 128, false},
+		{"one byte under the cap", maxResponseBytes - 1, false},
+		{"exactly at the cap", maxResponseBytes, false},
+		{"one byte over the cap", maxResponseBytes + 1, true},
+		{"far over the cap", maxResponseBytes * 4, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := ReadResponseBody(bytes.NewReader(bytes.Repeat([]byte("x"), tc.size)))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ReadResponseBody(%d bytes) succeeded, want an error", tc.size)
+				}
+				if b != nil {
+					t.Fatalf("an over-long body must not be returned truncated")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReadResponseBody(%d bytes) failed: %v", tc.size, err)
+			}
+			if len(b) != tc.size {
+				t.Fatalf("read %d bytes, want %d", len(b), tc.size)
+			}
+		})
+	}
+}
+
+// TestReadResponseBodyStopsReadingEndlessStream is the case the cap exists for: a
+// host that never stops sending. Without the limit this never returns.
+func TestReadResponseBodyStopsReadingEndlessStream(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := ReadResponseBody(endlessReader{}); err == nil {
+			t.Error("an endless body should be rejected, not buffered")
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ReadResponseBody did not stop reading an endless stream")
+	}
+}
+
+// endlessReader never reaches EOF, standing in for a remote host streaming
+// without end.
+type endlessReader struct{}
+
+func (endlessReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
 }

@@ -19,7 +19,6 @@ package keys
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -108,7 +107,7 @@ func queryOneNotary(notary string, serverName models.ServerName, minValidUntilTs
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("notary %s returned status %d", notary, resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := federation.ReadResponseBody(resp.Body)
 	if err != nil {
 		return nil, err
 	}

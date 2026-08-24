@@ -55,6 +55,28 @@ const (
 // wellKnownClient is a shared, timeout-bounded client for .well-known discovery.
 var wellKnownClient = &http.Client{Timeout: wellKnownTimeout}
 
+// maxResponseBytes bounds how much of a remote response we will buffer. Key
+// responses and .well-known documents are a few KB at most, so a megabyte is
+// generous. The timeouts above bound how *long* a remote host can hold us, but
+// nothing bounded how much it could hand us: a host streaming an endless body at
+// speed could balloon our heap inside the timeout window.
+const maxResponseBytes = 1 << 20 // 1 MiB
+
+// ReadResponseBody reads a remote HTTP response body, refusing to buffer more
+// than maxResponseBytes. It reads one byte past the limit to tell "exactly at the
+// cap" apart from "still going", so an over-long body is reported as an error
+// rather than silently truncated into something that might still parse.
+func ReadResponseBody(body io.Reader) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(body, maxResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxResponseBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", maxResponseBytes)
+	}
+	return b, nil
+}
+
 // Discovery cache lifetimes. The governing distinction is not success vs failure
 // but whether the remote host actually told us something: only an answer we got
 // from it may be trusted for long. A lookup that timed out or blew up taught us
@@ -135,7 +157,7 @@ func classifyWellKnown(r *http.Response, err error) (addr string, outcome wellKn
 		return "", wellKnownFailed, discoveryFailedTtl
 	}
 
-	c, err := io.ReadAll(r.Body)
+	c, err := ReadResponseBody(r.Body)
 	if err != nil {
 		return "", wellKnownFailed, discoveryFailedTtl
 	}

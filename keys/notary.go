@@ -19,7 +19,6 @@ package keys
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -210,7 +209,7 @@ func fetchDirectFromOrigin(serverName models.ServerName) (*models.CachedRemoteKe
 		return nil, fmt.Errorf("origin %s returned status %d", serverName, keysResponse.StatusCode)
 	}
 
-	c, err := io.ReadAll(keysResponse.Body)
+	c, err := federation.ReadResponseBody(keysResponse.Body)
 	if err != nil {
 		return nil, err
 	}
