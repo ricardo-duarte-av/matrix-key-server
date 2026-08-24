@@ -17,6 +17,8 @@
 package api_models
 
 import (
+	"errors"
+
 	"github.com/t2bot/matrix-key-server/db/models"
 )
 
@@ -41,4 +43,25 @@ type ServerKeyResultUnsigned struct {
 	ValidUntilTs  int64                         `json:"valid_until_ts"`
 	VerifyKeys    map[models.KeyID]VerifyKey    `json:"verify_keys"`
 	OldVerifyKeys map[models.KeyID]OldVerifyKey `json:"old_verify_keys"`
+}
+
+// Validate reports whether a decoded server-key object is structurally usable.
+//
+// ServerKeyResultUnsigned is embedded by pointer, and encoding/json only
+// allocates it when the payload carries at least one of its fields. A response
+// that carries none - an error body like {"errcode":"M_UNRECOGNIZED",...}, or a
+// bare {} - therefore unmarshals "successfully" into a result whose embedded
+// pointer is nil, and the first field access panics. Callers must run every
+// freshly-unmarshalled result through this before touching its fields.
+func (r *ServerKeyResult) Validate() error {
+	if r.ServerKeyResultUnsigned == nil {
+		return errors.New("response carries no server key fields")
+	}
+	if r.ServerName == "" {
+		return errors.New("response has an empty server_name")
+	}
+	if len(r.VerifyKeys) == 0 {
+		return errors.New("response has no verify_keys")
+	}
+	return nil
 }

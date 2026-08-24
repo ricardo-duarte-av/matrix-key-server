@@ -125,6 +125,9 @@ func queryOneNotary(notary string, serverName models.ServerName, minValidUntilTs
 		if err = json.Unmarshal(raw, &keyInfo); err != nil {
 			continue
 		}
+		if err = keyInfo.Validate(); err != nil {
+			continue
+		}
 		if keyInfo.ServerName != target {
 			continue
 		}

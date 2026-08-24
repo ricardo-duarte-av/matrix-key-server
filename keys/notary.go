@@ -18,7 +18,9 @@ package keys
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -201,6 +203,13 @@ func fetchDirectFromOrigin(serverName models.ServerName) (*models.CachedRemoteKe
 	}
 	defer keysResponse.Body.Close()
 
+	// Plenty of hosts answer this endpoint with an error document (or an HTML
+	// error page from a reverse proxy) rather than keys. Reject on status before
+	// parsing so those never reach the decode path.
+	if keysResponse.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("origin %s returned status %d", serverName, keysResponse.StatusCode)
+	}
+
 	c, err := io.ReadAll(keysResponse.Body)
 	if err != nil {
 		return nil, err
@@ -210,6 +219,9 @@ func fetchDirectFromOrigin(serverName models.ServerName) (*models.CachedRemoteKe
 	err = json.Unmarshal(c, &keyInfo)
 	if err != nil {
 		return nil, err
+	}
+	if err = keyInfo.Validate(); err != nil {
+		return nil, fmt.Errorf("origin %s returned an unusable key response: %w", serverName, err)
 	}
 
 	publicKeys, err := grabPublicKeys(keyInfo)
