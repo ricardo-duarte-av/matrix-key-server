@@ -52,6 +52,20 @@ const (
 	ResultFailure = "failure"
 )
 
+// Discovery outcome label values for the well-known/SRV resolution counter. They
+// record how a server's federation URL was determined, which is what decides how
+// long the result may be cached: only an answer we actually got from the remote
+// host earns a long TTL.
+const (
+	DiscoveryCached          = "cached"
+	DiscoveryLiteral         = "literal"
+	DiscoveryWellKnown       = "well_known"
+	DiscoveryWellKnownAbsent = "well_known_absent"
+	DiscoveryWellKnownFailed = "well_known_failed"
+	DiscoverySRV             = "srv"
+	DiscoveryFallback        = "fallback"
+)
+
 // Reachability label values for the known-servers gauge. They partition the
 // cached servers, so summing across the label gives the total we know of.
 const (
@@ -93,6 +107,11 @@ var (
 		Buckets: fetchBuckets,
 	}, []string{"notary", "result"})
 
+	discoveryLookups = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "keyserver_wellknown_lookups_total",
+		Help: "Federation URL discovery attempts, labelled by the outcome that produced the URL (cached, literal, well_known, well_known_absent, well_known_failed, srv, fallback).",
+	}, []string{"outcome"})
+
 	knownServers = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "keyserver_known_servers",
 		Help: "Cached remote servers, labelled by how their keys were last obtained: direct from the origin, through a trusted notary, or unreachable (neither could resolve them). The labels partition the set, so summing gives the total number of servers known.",
@@ -127,6 +146,12 @@ func ObserveOriginFetch(result string, d time.Duration) {
 // trusted notary.
 func ObserveNotaryFetch(notary, result string, d time.Duration) {
 	notaryFetch.WithLabelValues(notary, result).Observe(d.Seconds())
+}
+
+// RecordDiscovery increments the federation URL discovery counter for the given
+// outcome.
+func RecordDiscovery(outcome string) {
+	discoveryLookups.WithLabelValues(outcome).Inc()
 }
 
 // SetKnownServers publishes the current counts of directly-reachable,
