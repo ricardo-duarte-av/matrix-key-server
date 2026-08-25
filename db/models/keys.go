@@ -37,8 +37,17 @@ type RemoteServer struct {
 
 	// ObtainedViaNotary is empty when these keys were fetched directly from the
 	// origin server, or the server_name of the trusted notary they were fetched
-	// through when the origin was unreachable.
+	// through when the origin was unreachable. It is provenance only: it says
+	// where the bytes came from, never whether the origin is worth probing again.
 	ObtainedViaNotary string
+
+	// OriginFailures counts consecutive failed origin probes, and
+	// NextOriginAttemptTs is when the origin may be probed again. Together they
+	// describe the origin's reachability, which is independent of the keys above:
+	// a live server can hold an expired notary-sourced bundle (we just have not
+	// re-reached it yet), and a gone server can hold keys that are still valid.
+	OriginFailures      int
+	NextOriginAttemptTs Timestamp
 }
 
 type RemoteKey struct {

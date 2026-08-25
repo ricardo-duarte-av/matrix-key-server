@@ -44,6 +44,7 @@ func Setup(dbUrl string) error {
 	fnCalls = append(fnCalls, func() error { return applyMigration(dbInstance.db, migrations.Up20190727160045AddKeyTables) })
 	fnCalls = append(fnCalls, func() error { return applyMigration(dbInstance.db, migrations.Up20190728135345AddRemoteKeyTables) })
 	fnCalls = append(fnCalls, func() error { return applyMigration(dbInstance.db, migrations.Up20260708000000AddNotaryProvenance) })
+	fnCalls = append(fnCalls, func() error { return applyMigration(dbInstance.db, migrations.Up20260825000000AddOriginProbeSchedule) })
 	fnCalls = append(fnCalls, func() error { return prepareStatements(dbInstance.db) })
 
 	for _, fn := range fnCalls {

@@ -70,6 +70,7 @@ func main() {
 	}
 
 	startKnownServerGauges()
+	keys.StartOriginSweeper()
 
 	logrus.Info("Starting app...")
 	api.Run(*listenHost, *listenPort)

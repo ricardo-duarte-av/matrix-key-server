@@ -97,7 +97,8 @@ func GetRemoteServerMetadata(serverName models.ServerName) (*models.RemoteServer
 	var server = &models.RemoteServer{ServerName: serverName}
 	var jsonOut string
 
-	err := r.Scan(&server.UpdatedTs, &server.ValidUntilTs, &jsonOut, &server.ObtainedViaNotary)
+	err := r.Scan(&server.UpdatedTs, &server.ValidUntilTs, &jsonOut, &server.ObtainedViaNotary,
+		&server.OriginFailures, &server.NextOriginAttemptTs)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -132,11 +133,40 @@ func UpsertRemoteServer(serverName models.ServerName, updatedTs models.Timestamp
 	return nil
 }
 
-// TouchRemoteServer bumps only the updated_ts of an existing remote server row,
-// recording that we just attempted a refresh without disturbing the cached keys
-// or their valid_until_ts. It is a no-op if the server is not yet cached.
-func TouchRemoteServer(serverName models.ServerName, updatedTs models.Timestamp) error {
-	_, err := statements[touchRemoteServer].Exec(serverName, updatedTs)
+// NoteOriginFailure records a failed origin probe: the new consecutive failure
+// count and when the origin may be probed again. It creates the row when the
+// server is not yet known, so a server nobody can resolve is rate-limited from
+// its very first failure rather than being re-probed on every request.
+func NoteOriginFailure(serverName models.ServerName, updatedTs models.Timestamp, failures int, nextAttemptTs models.Timestamp) error {
+	_, err := statements[noteOriginFailure].Exec(serverName, updatedTs, failures, nextAttemptTs)
+	return err
+}
+
+// GetOriginProbeCandidates returns up to limit servers whose origin is due for
+// another probe, oldest due first. These are exactly the servers currently being
+// answered from a notary copy or from nothing at all.
+func GetOriginProbeCandidates(now models.Timestamp, limit int) ([]models.ServerName, error) {
+	rows, err := statements[selectOriginProbeCandidates].Query(now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	servers := make([]models.ServerName, 0)
+	for rows.Next() {
+		var s models.ServerName
+		if err = rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		servers = append(servers, s)
+	}
+	return servers, rows.Err()
+}
+
+// ResetOriginProbe clears the origin backoff after a successful direct fetch, so
+// a server that recovers is treated as healthy again immediately.
+func ResetOriginProbe(serverName models.ServerName) error {
+	_, err := statements[resetOriginProbe].Exec(serverName)
 	return err
 }
 
