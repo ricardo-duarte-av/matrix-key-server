@@ -37,6 +37,7 @@ const insertRemoteSignature = "insertRemoteSignature"
 const countKnownServers = "countKnownServers"
 const noteOriginFailure = "noteOriginFailure"
 const resetOriginProbe = "resetOriginProbe"
+const invalidateRemoteServer = "invalidateRemoteServer"
 const selectOriginProbeCandidates = "selectOriginProbeCandidates"
 
 var queries = map[string]string{
@@ -79,6 +80,10 @@ var queries = map[string]string{
 	resetOriginProbe:      "UPDATE remote_servers SET origin_failures = 0, next_origin_attempt_ts = 0 WHERE server_name = $1;",
 	insertRemoteKey:       "INSERT INTO remote_keys (server_name, key_id, public_key_b64, expires_ts) VALUES ($1, $2, $3, $4);",
 	insertRemoteSignature: "INSERT INTO remote_signatures (server_name, key_id, signature_b64) VALUES ($1, $2, $3);",
+
+	// A record whose keys and signatures no longer verify together: made the
+	// oldest possible, so it answers nothing and any fetched copy replaces it.
+	invalidateRemoteServer: "UPDATE remote_servers SET valid_until_ts = 0, updated_ts = 0 WHERE server_name = $1;",
 
 	// Every remote_servers row falls in exactly one bucket, so the three counts
 	// sum to the total number of servers we know of. A row with no keys at all is

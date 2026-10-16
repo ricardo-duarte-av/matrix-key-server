@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -151,18 +152,11 @@ func heldSatisfies(held *models.CachedRemoteKeys, minValidUntilTs models.Timesta
 // archived bundle - serving those is the point of a reservoir. The second is
 // about reachability alone, and lives in the origin backoff columns.
 func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timestamp, allowNotaryFallback bool) (*models.CachedRemoteKeys, error) {
-	s, err := db.GetRemoteServerMetadata(serverName)
+	s, held, err := loadHeld(serverName)
 	if err != nil {
 		return nil, err
 	}
 	now := util.NowMillis()
-
-	var held *models.CachedRemoteKeys
-	if s != nil {
-		if held, err = packageCachedKeysFor(s); err != nil {
-			return nil, err
-		}
-	}
 
 	// Fast path: what we hold already answers the request outright.
 	if held != nil && isFresh(int64(s.UpdatedTs), int64(s.ValidUntilTs), int64(minValidUntilTs), now) {
@@ -334,6 +328,49 @@ func fetchDirectFromOrigin(serverName models.ServerName) (*models.CachedRemoteKe
 	return storeRemoteKeys(keyInfo, additionalFields, "")
 }
 
+// serverLocks serialises, per server, storing its keys (a delete, then
+// inserts) against reading them. Without it two stores could interleave
+// (seen: a duplicate remote_keys_pkey), and a read in the middle of one could
+// pair one answer's keys with another's signatures or validity, which then
+// fails the last-minute signature check and, before that was handled, failed
+// the whole batch with a 500.
+var serverLocks sync.Map // models.ServerName -> *sync.RWMutex
+
+func serverLock(serverName models.ServerName) *sync.RWMutex {
+	l, _ := serverLocks.LoadOrStore(serverName, &sync.RWMutex{})
+	return l.(*sync.RWMutex)
+}
+
+// loadHeld reads a server's stored record and its keys and signatures as one
+// consistent set. Both are nil for a server we know nothing of.
+func loadHeld(serverName models.ServerName) (*models.RemoteServer, *models.CachedRemoteKeys, error) {
+	l := serverLock(serverName)
+	l.RLock()
+	defer l.RUnlock()
+	s, err := db.GetRemoteServerMetadata(serverName)
+	if err != nil || s == nil {
+		return nil, nil, err
+	}
+	held, err := packageCachedKeysFor(s)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s, held, nil
+}
+
+// InvalidateHeld marks a server's stored record as answering nothing, for
+// when its keys and signatures no longer verify together, so that the next
+// fetch replaces it. Without it, a notary's copy no newer than the corrupt
+// one would never be stored, and the record would stay unservable.
+func InvalidateHeld(serverName models.ServerName) error {
+	l := serverLock(serverName)
+	l.Lock()
+	defer l.Unlock()
+	return db.InvalidateRemoteServer(serverName)
+}
+
+// packageCachedKeysFor reads a server's keys and signatures. The caller holds
+// the server's lock.
 func packageCachedKeysFor(server *models.RemoteServer) (*models.CachedRemoteKeys, error) {
 	keys, err := db.GetAllRemoteServerKeys(server.ServerName)
 	if err != nil {
@@ -355,6 +392,9 @@ func packageCachedKeysFor(server *models.RemoteServer) (*models.CachedRemoteKeys
 func storeRemoteKeys(keyInfo api_models.ServerKeyResult, additionalJson models.AdditionalJSON, obtainedViaNotary string) (*models.CachedRemoteKeys, error) {
 	now := util.NowMillis()
 	serverName := models.ServerName(keyInfo.ServerName)
+	l := serverLock(serverName)
+	l.Lock()
+	defer l.Unlock()
 
 	// Upgrade rule. The reservoir must never lose keys, and the write path below
 	// deletes-then-reinserts, so a thinner or older reply must not land on top of

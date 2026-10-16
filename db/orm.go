@@ -170,6 +170,13 @@ func ResetOriginProbe(serverName models.ServerName) error {
 	return err
 }
 
+// InvalidateRemoteServer marks a server's stored record as answering nothing,
+// so that the next fetch, from the origin or a notary, replaces it.
+func InvalidateRemoteServer(serverName models.ServerName) error {
+	_, err := statements[invalidateRemoteServer].Exec(serverName)
+	return err
+}
+
 func DeleteRemoteServerKeys(serverName models.ServerName) error {
 	_, err := statements[deleteRemoteKeys].Exec(serverName)
 	if err != nil {

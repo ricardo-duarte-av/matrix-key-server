@@ -133,10 +133,15 @@ func QueryKeysBatch(r *http.Request, log *logrus.Entry) interface{} {
 	}
 	wg.Wait()
 
+	// A server we cannot answer for is left out, as Synapse's own notary
+	// leaves out what it cannot fetch. Failing the whole batch for one server
+	// made Synapse back off from this notary for ten minutes, for every
+	// server, and lose the rest of the batch's answers.
 	finalResp := &BatchedServerKeys{Keys: make([]map[string]interface{}, 0, len(items))}
-	for _, res := range results {
+	for i, res := range results {
 		if res.errLike != nil {
-			return res.errLike
+			log.Warnf("Leaving %s out of the batch: it could not be answered", items[i].domain)
+			continue
 		}
 		finalResp.Keys = append(finalResp.Keys, res.expanded)
 	}
@@ -247,7 +252,15 @@ func findAndPrepareKeys(serverName string, minValidTs int64, log *logrus.Entry) 
 	// Do last minute verifications on signatures
 	err = signing.VerifySignatures(expanded, publicKeys)
 	if err != nil {
+		// The stored keys, signatures and validity no longer verify
+		// together. Never serve them, and make the record replaceable by
+		// the next fetch, which an older-looking copy could not otherwise do.
 		log.Error(err)
+		if iErr := keys.InvalidateHeld(remoteKeys.ServerName); iErr != nil {
+			log.Errorf("Could not invalidate the stored keys for %s: %v", serverName, iErr)
+		} else {
+			log.Warnf("Invalidated the stored keys for %s; the next fetch replaces them", serverName)
+		}
 		return nil, common.InternalServerError("Failed last-minute signature verifications")
 	}
 
