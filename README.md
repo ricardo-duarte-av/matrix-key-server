@@ -31,10 +31,15 @@ notaries to retrieve that server's keys. This allows it to serve keys for long-d
 cached by a notary while they were still alive (useful for verifying historical events).
 
 Set the trusted notaries with the `-notaries` flag (or the `NOTARIES` environment variable) as a
-comma-separated list of server names. It defaults to `matrix.org,tchncs.de,unredacted.org`. The first
-notary whose response passes signature verification is used; only servers you actually trust should be
-listed here, as the notary vouches for keys the origin can no longer confirm. To disable the fallback
-entirely, pass an empty list (`-notaries=""`).
+comma-separated list of server names. It defaults to `matrix.org,tchncs.de,unredacted.org`. The notaries
+are asked in order, and the first response that passes signature verification and is valid for as long
+as the caller asked (`minimum_valid_until_ts`) is used; if none is, the longest-valid one is. Only servers
+you actually trust should be listed here, as the notary vouches for keys the origin can no longer confirm.
+To disable the fallback entirely, pass an empty list (`-notaries=""`).
+
+The notaries are asked whenever the keys held cannot satisfy a request and the origin cannot be reached,
+including while the origin is backed off after failed probes. A walk for a given server happens at most
+once every 15 minutes.
 
 #### Docker
 

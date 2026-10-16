@@ -37,37 +37,61 @@ import (
 // origin server is unreachable. Set from configuration at startup.
 var TrustedNotaries []string
 
-// queryViaTrustedNotaries asks each configured trusted notary, in order, for the
-// keys of an unreachable server. It returns the first cryptographically verified
-// result (quorum of 1). A nil result with a nil error means no notary could help.
+// queryViaTrustedNotaries asks the configured trusted notaries, in order, for the
+// keys of an unreachable server. See walkNotaries for which answer wins. A nil
+// result with a nil error means no notary could help.
 func queryViaTrustedNotaries(serverName models.ServerName, minValidUntilTs models.Timestamp) (*models.CachedRemoteKeys, error) {
+	return walkNotaries(TrustedNotaries, serverName, minValidUntilTs, func(notary string) (*models.CachedRemoteKeys, error) {
+		notaryStart := time.Now()
+		cached, err := queryOneNotary(notary, serverName, minValidUntilTs)
+		if err != nil || cached == nil {
+			metrics.ObserveNotaryFetch(notary, metrics.ResultFailure, time.Since(notaryStart))
+		} else {
+			metrics.ObserveNotaryFetch(notary, metrics.ResultSuccess, time.Since(notaryStart))
+		}
+		return cached, err
+	})
+}
+
+// walkNotaries asks each notary in turn, stopping at the first whose answer is
+// valid until minValidUntilTs (quorum of 1). An answer that is verified but not
+// valid for long enough does not stop the walk: the first notary in the list
+// often holds only the copy we already have, while a later one has fetched a
+// current one. If no answer is valid for long enough, the longest-valid one is
+// returned, so the caller still gets the best copy anyone had.
+func walkNotaries(notaries []string, serverName models.ServerName, minValidUntilTs models.Timestamp, ask func(notary string) (*models.CachedRemoteKeys, error)) (*models.CachedRemoteKeys, error) {
 	target := string(serverName)
+	var best *models.CachedRemoteKeys
 	var lastErr error
 
-	for _, notary := range TrustedNotaries {
+	for _, notary := range notaries {
 		// Never ask a notary about itself, and never ask ourselves.
 		if notary == "" || notary == SelfDomainName || notary == target {
 			continue
 		}
 
-		notaryStart := time.Now()
-		cached, err := queryOneNotary(notary, serverName, minValidUntilTs)
+		cached, err := ask(notary)
 		if err != nil {
-			metrics.ObserveNotaryFetch(notary, metrics.ResultFailure, time.Since(notaryStart))
 			logrus.Warnf("Trusted notary %s could not provide keys for %s: %v", notary, target, err)
 			lastErr = err
 			continue
 		}
-		if cached == nil {
-			metrics.ObserveNotaryFetch(notary, metrics.ResultFailure, time.Since(notaryStart))
+		if cached == nil || cached.RemoteServer == nil {
 			continue
 		}
-		metrics.ObserveNotaryFetch(notary, metrics.ResultSuccess, time.Since(notaryStart))
-
-		logrus.Warnf("Obtained keys for %s via trusted notary %s (origin unreachable)", target, notary)
-		return cached, nil
+		if best == nil || cached.ValidUntilTs > best.ValidUntilTs {
+			best = cached
+		}
+		if heldSatisfies(cached, minValidUntilTs) {
+			logrus.Warnf("Obtained keys for %s via trusted notary %s (origin unreachable)", target, notary)
+			return cached, nil
+		}
+		logrus.Infof("Trusted notary %s has no keys for %s valid until %d; asking the next one", notary, target, minValidUntilTs)
 	}
 
+	if best != nil {
+		return best, nil
+	}
 	return nil, lastErr
 }
 

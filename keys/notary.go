@@ -170,37 +170,48 @@ func queryRemoteKeys(serverName models.ServerName, minValidUntilTs models.Timest
 		return held, nil
 	}
 
-	// Stale or expired, but the origin is inside its backoff. Serve what we hold
-	// rather than re-probing a host that just told us it cannot help.
-	if !shouldProbeOrigin(s, now) {
+	// Stale or expired. Probe the origin unless it is inside its backoff: a host
+	// that just told us it cannot help is not asked again before then.
+	probed := shouldProbeOrigin(s, now)
+	if probed {
+		// TODO: Rate limit: https://github.com/turt2live/matrix-key-server/issues/2
+		result, err := probeOrigin(serverName, s, now)
+		if err == nil {
+			metrics.RecordKeyQuery(metrics.OutcomeOriginSuccess)
+			return result, nil
+		}
+	}
+
+	// Ask the notaries when what we hold cannot answer this request, whether or
+	// not the origin was probed just now. The origin backoff says nothing about
+	// what other notaries hold: gating the walk on it served copies months out of
+	// date for up to a day while other notaries had current ones. A walk costs
+	// several federated round-trips per notary, so it has its own, shorter,
+	// standoff (notaryWalks).
+	if allowNotaryFallback && !heldSatisfies(held, minValidUntilTs) && notaryWalks.take(serverName, now) {
+		cached, nErr := queryViaTrustedNotaries(serverName, minValidUntilTs)
+		if nErr != nil {
+			logrus.Warnf("Notary fallback for %s failed: %v", serverName, nErr)
+		} else if cached != nil {
+			if heldSatisfies(cached, minValidUntilTs) {
+				metrics.RecordKeyQuery(metrics.OutcomeNotarySuccess)
+				return cached, nil
+			}
+			// No notary had a copy valid for long enough. storeRemoteKeys only
+			// replaces a record with a longer-valid one, so this is the best
+			// copy now held; serve it as below.
+			held = cached
+		}
+	}
+
+	// Inside the origin backoff: serve what we hold, as before.
+	if !probed {
 		if isArchived(s, now) {
 			metrics.RecordKeyQuery(metrics.OutcomeArchiveServed)
 		} else {
 			metrics.RecordKeyQuery(metrics.OutcomeCacheCooldown)
 		}
 		return held, nil
-	}
-
-	// TODO: Rate limit: https://github.com/turt2live/matrix-key-server/issues/2
-	result, err := probeOrigin(serverName, s, now)
-	if err == nil {
-		metrics.RecordKeyQuery(metrics.OutcomeOriginSuccess)
-		return result, nil
-	}
-
-	// Ask the notaries only when what we hold cannot answer this request anyway.
-	// A notary walk costs several federated round-trips per notary, and when our
-	// stored bundle already satisfies the caller it buys nothing. Reaching here
-	// at all is gated by the origin backoff, so a long-dead server costs one walk
-	// per probe tick rather than one per request.
-	if allowNotaryFallback && !heldSatisfies(held, minValidUntilTs) {
-		cached, nErr := queryViaTrustedNotaries(serverName, minValidUntilTs)
-		if nErr != nil {
-			logrus.Warnf("Notary fallback for %s failed: %v", serverName, nErr)
-		} else if cached != nil {
-			metrics.RecordKeyQuery(metrics.OutcomeNotarySuccess)
-			return cached, nil
-		}
 	}
 
 	// Neither the origin nor a notary could improve on what we have. Serve the
